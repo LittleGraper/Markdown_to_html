@@ -167,6 +167,36 @@ noneof = satisfy . flip notElem
 digit :: Parser Char
 digit = satisfy isDigit
 
+
+-- | A parser that parses one or more digits and returns them as a string.
+-- | This parser is based on the 'digit' parser, which parses a single digit.
+-- | 'some' is used to ensure that we parse at least one digit.
+-- >>> parse parseDigits "123abc"
+-- Result >abc< "123"
+-- >>> isErrorResult (parse parseDigits "abc")
+-- True
+parseDigits :: Parser String
+parseDigits = some digit
+
+
+-- | A parser that parses a positive integer.
+-- | It then converts the string to an integer and ensures the number is positive.
+--
+-- >>> parse parsePositiveInt "123abc"
+-- Result >abc< 123
+-- >>> isErrorResult (parse parsePositiveInt "0abc")
+-- True
+-- >>> isErrorResult (parse parsePositiveInt "abc")
+-- True
+parsePositiveInt :: Parser Int
+parsePositiveInt = do
+  digitsStr <- parseDigits        -- Parse the digits as a string
+  let number = read digitsStr :: Int  -- Convert the string to an integer
+  if number > 0
+    then return number            -- Return the number if it's positive
+    else empty                    -- Fail the parser if the number is not positive
+
+
 -- | Return a parser that produces a space character but fails if
 --
 --   * the input is empty; or
@@ -319,3 +349,16 @@ commaTok = charTok ','
 -- True
 stringTok :: String -> Parser String
 stringTok = tok . string
+
+
+
+
+
+-- -- | A function that parses a positive integer
+-- parsePositiveInt :: Parser Int
+-- parsePositiveInt = do
+--   digits <- some digit
+--   let number = read digits :: Int
+--   if number > 0
+--     then return number 
+--     else empty
