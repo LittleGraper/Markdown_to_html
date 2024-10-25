@@ -1,4 +1,5 @@
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+
 {-# HLINT ignore "Use fromMaybe" #-}
 module Assignment (markdownParser, convertADTHTML) where
 
@@ -7,7 +8,7 @@ import Control.Monad (guard)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Instances (Parser (..))
-import Parser (inlineSpace, is, noneof, oneof, parseEmptyLines, parsePositiveInt, spaces, string, spaces1, space)
+import Parser (inlineSpace, is, noneof, oneof, parseEmptyLines, parsePositiveInt, space, spaces, spaces1, string)
 
 -- Define Algebraic Data Types(ADTs)
 data ADT = Document [Block]
@@ -29,10 +30,9 @@ data Block
   = Heading Int [Inline]
   | FreeText [Inline]
   | FootnoteRef Int String
-  | Image String String String   -- alt, url, title
+  | Image String String String -- alt, url, title
   | BlockQuote [Block]
-  | CodeBlock String String
-
+  | CodeBlock String String -- language, content
   deriving (Show, Eq)
 
 -- | --------------------------------------------------
@@ -98,7 +98,6 @@ parseInline =
     <|> parseFootnoteInline
     <|> parsePlainText
 
-
 -- Convert inline elements to HTML
 convertInline :: Inline -> String
 convertInline (PlainText text) = text
@@ -150,9 +149,7 @@ alternativeHeading = do
 parseHeading :: Parser Block
 parseHeading = hashHeading <|> alternativeHeading
 
-
 -- Image
--- >>> parse parseImage ""
 parseImage :: Parser Block
 parseImage = do
   _ <- is '!'
@@ -166,82 +163,70 @@ parseImage = do
   _ <- is ')'
   return $ Image alt url (maybe "" id title)
 
-
 -- parse the title of image
--- This parser try to parse the title of image until it meets the '""' in the end of the title.
 imageTitleParser :: Parser (Maybe String)
 imageTitleParser = do
-  _ <- optional (is '"')      
-  title <- optional (many (noneof "\"")) 
-  _ <- optional (is '"')       
+  _ <- optional (is '"')
+  title <- optional (many (noneof "\""))
+  _ <- optional (is '"')
   return title
 
-
-
--- Quote line parser
+-- Blockquote line parser
 parseBlockQuoteLine :: Parser Block
 parseBlockQuoteLine = do
   _ <- spaces
   _ <- is '>'
-  _ <- space
+  _ <- optional space
   content <- many parseInline
-  _ <- spaces
   _ <- optional (is '\n')
   return $ FreeText content
 
--- Quote block parser
+-- Blockquote parser
 parseBlockQuote :: Parser Block
 parseBlockQuote = do
-  blockQuote <- some parseBlockQuoteLine
-  _ <- optional parseEmptyLines
-  return $ BlockQuote blockQuote
+  quoteLines <- some parseBlockQuoteLine
+  return $ BlockQuote quoteLines
 
-
-
--- 辅助函数：解析代码内容直到遇到结束的反引号行
-parseCodeLines :: Parser String
-parseCodeLines = do
-  line <- many (noneof "\n")  -- 解析直到行尾
-  _ <- is '\n'                -- 消耗行尾换行符
-  rest <- optional parseCodeLines  -- 递归解析其余内容
-  return $ line ++ "\n" ++ maybe "" id rest
-
--- 代码块解析器
+-- Code block parser
 parseCode :: Parser Block
 parseCode = do
   _ <- spaces
-  _ <- string "```"                  -- 开始标记
-  lang <- optional (many (noneof "\n")) -- 可选的语言标识符
+  _ <- string "```" -- 开始标记
+  lang <- many (noneof "\n") -- 可选的语言标识符
   _ <- is '\n'
-  codeLines <- parseCodeLines         -- 解析代码内容直到结束标记
-  _ <- string "```"                  -- 结束标记
-  _ <- spaces
-  _ <- optional parseEmptyLines
-  return $ CodeBlock (maybe "" id lang) codeLines
+  CodeBlock lang <$> parseCodeContent
 
-
+-- 解析代码内容，递归处理每行，直到遇到结束标记
+parseCodeContent :: Parser String
+parseCodeContent = do
+  line <- many (noneof "\n") -- 解析一行直到行尾
+  _ <- is '\n' -- 消耗换行符
+  -- 尝试匹配结束标记，若成功则结束解析，否则继续解析下一行
+  rest <- (string "```" >> return "") <|> parseCodeContent
+  return $ line ++ "\n" ++ rest
 
 -- Footnote reference parser
 parseFootnoteRef :: Parser Block
 parseFootnoteRef = do
-  _ <- spaces                     -- 忽略前导空白
-  _ <- string "[^"                -- 脚注开头
-  num <- parsePositiveInt         -- 脚注编号
-  _ <- string "]:"                -- 脚注编号后的分隔符
-  _ <- spaces                     -- 忽略冒号后的空白
-  content <- some (noneof "\n")   -- 解析内容直到换行
+  _ <- spaces -- 忽略前导空白
+  _ <- string "[^" -- 脚注开头
+  num <- parsePositiveInt -- 脚注编号
+  _ <- string "]:" -- 脚注编号后的分隔符
+  _ <- spaces -- 忽略冒号后的空白
+  content <- some (noneof "\n") -- 解析内容直到换行
   return $ FootnoteRef num content
 
 -- parse all block-level elements
 parseBlock :: Parser Block
 parseBlock = do
   _ <- optional parseEmptyLines
-  block <- parseFootnoteRef
-        <|> parseHeading
-        <|> parseBlockQuote
-        <|> parseCode
-        <|> parseImage
-        <|> parseFreeText
+  block <-
+    parseFootnoteRef
+      <|> parseHeading
+      <|> parseBlockQuote
+      <|> parseCode
+      <|> parseImage
+      <|> parseFreeText
   _ <- optional parseEmptyLines
   return block
 
@@ -256,39 +241,36 @@ markdownParser = do
 convertBlock :: Block -> String
 convertBlock (Heading level inlines) =
   let tag = "h" ++ show level
-   in "<" ++ tag ++ ">" ++ concatMap convertInline inlines ++ "</" ++ tag ++ ">\n"
+   in "    <" ++ tag ++ ">" ++ concatMap convertInline inlines ++ "</" ++ tag ++ ">\n"
 convertBlock (FreeText inlines) =
-  "<p>" ++ concatMap convertInline inlines ++ "</p>\n"
+  "    <p>" ++ concatMap convertInline inlines ++ "</p>\n"
 convertBlock (FootnoteRef num content) =
-  "<p id=\"fn" ++ show num ++ "\">" ++ content ++ "</p>\n"
+  "    <p id=\"fn" ++ show num ++ "\">" ++ content ++ "</p>\n"
 convertBlock (Image altText url title) =
-  "<img src=\"" ++ url ++ "\" alt=\"" ++ altText ++ "\" title=\"" ++ title ++ "\">\n"
+  "    <img src=\"" ++ url ++ "\" alt=\"" ++ altText ++ "\" title=\"" ++ title ++ "\">\n"
 convertBlock (BlockQuote blocks) =
-  "<blockquote>\n" ++ concatMap convertBlockQuoteLine blocks ++ "</blockquote>\n"
--- Convert code block to HTML
+  "    <blockquote>\n" ++ concatMap convertBlockQuoteLine blocks ++ "    </blockquote>\n"
 convertBlock (CodeBlock lang code) =
   let codeClass = if null lang then "" else " class=\"language-" ++ lang ++ "\""
-  in "<pre><code" ++ codeClass ++ ">" ++ escapeHtml code ++ "</code></pre>\n"
-
-
--- Escape HTML special characters for code blocks
-escapeHtml :: String -> String
-escapeHtml = concatMap escapeChar
-  where
-    escapeChar '<' = "&lt;"
-    escapeChar '>' = "&gt;"
-    escapeChar '&' = "&amp;"
-    escapeChar '"' = "&quot;"
-    escapeChar c   = [c]
+   in "    <pre><code" ++ codeClass ++ ">" ++ code ++ "</code></pre>\n"
 
 convertBlockQuoteLine :: Block -> String
 convertBlockQuoteLine (FreeText inlines) =
-  "  <p>" ++ concatMap convertInline inlines ++ "</p>\n"
+  "        <p>" ++ concatMap convertInline inlines ++ "</p>\n"
 convertBlockQuoteLine _ = ""
 
--- Convert ADT to full HTML page
+-- Convert ADT to a full HTML page with standard HTML structure and indentation
 convertADTHTML :: ADT -> String
-convertADTHTML (Document blocks) = concatMap convertBlock blocks
+convertADTHTML (Document blocks) =
+  "<!DOCTYPE html>\n<html lang=\"en\">\n\n"
+    ++ "<head>\n"
+    ++ "    <meta charset=\"UTF-8\">\n"
+    ++ "    <title>Test</title>\n"
+    ++ "</head>\n\n"
+    ++ "<body>\n"
+    ++ concatMap convertBlock blocks
+    ++ "</body>\n\n"
+    ++ "</html>\n"
 
 -- Get current time (unused in this example)
 getTime :: IO String
