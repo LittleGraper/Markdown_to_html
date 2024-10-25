@@ -1,3 +1,5 @@
+{-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
+{-# HLINT ignore "Use fromMaybe" #-}
 module Assignment (markdownParser, convertADTHTML) where
 
 import Control.Applicative (Alternative (..), optional)
@@ -5,7 +7,7 @@ import Control.Monad (guard)
 import Data.Time.Clock (getCurrentTime)
 import Data.Time.Format (defaultTimeLocale, formatTime)
 import Instances (Parser (..))
-import Parser (inlineSpace, is, noneof, oneof, parseEmptyLines, parsePositiveInt, spaces, string)
+import Parser (inlineSpace, is, noneof, oneof, parseEmptyLines, parsePositiveInt, spaces, string, spaces1)
 
 -- Define Algebraic Data Types(ADTs)
 data ADT = Document [Block]
@@ -24,8 +26,11 @@ data Inline
 
 -- Define block-level elements
 data Block
-  = Heading Int [Inline] -- 标题，包含级别和行内元素
-  | FreeText [Inline] -- 段落，包含行内元素
+  = Heading Int [Inline]
+  | FreeText [Inline]
+  | FootnoteRef Int String
+  | Image String String String   -- alt, url, title
+
   deriving (Show, Eq)
 
 -- | --------------------------------------------------
@@ -91,7 +96,8 @@ parseInline =
     <|> parseFootnoteInline
     <|> parsePlainText
 
--- 转换行内元素为 HTML
+
+-- Convert inline elements to HTML
 convertInline :: Inline -> String
 convertInline (PlainText text) = text
 convertInline (Italic inlines) = "<em>" ++ concatMap convertInline inlines ++ "</em>"
@@ -142,11 +148,49 @@ alternativeHeading = do
 parseHeading :: Parser Block
 parseHeading = hashHeading <|> alternativeHeading
 
+
+-- Image
+-- >>> parse parseImage ""
+parseImage :: Parser Block
+parseImage = do
+  _ <- is '!'
+  _ <- is '['
+  alt <- many (noneof "]")
+  _ <- is ']'
+  _ <- is '('
+  url <- many (noneof " ")
+  _ <- spaces1
+  title <- titleParser
+  _ <- is ')'
+  return $ Image alt url (maybe "" id title)
+
+
+-- parse the title of image
+-- This parser try to parse the title of image until it meets the '""' in the end of the title.
+titleParser :: Parser (Maybe String)
+titleParser = do
+  _ <- optional (is '"')      
+  title <- optional (many (noneof "\"")) 
+  _ <- optional (is '"')       
+  return title
+
+
+-- Footnote reference parser
+parseFootnoteRef :: Parser Block
+parseFootnoteRef = do
+  _ <- spaces                     -- 忽略前导空白
+  _ <- string "[^"                -- 脚注开头
+  num <- parsePositiveInt         -- 脚注编号
+  _ <- string "]:"                -- 脚注编号后的分隔符
+  _ <- spaces                     -- 忽略冒号后的空白
+  content <- some (noneof "\n")   -- 解析内容直到换行
+  return $ FootnoteRef num content
+
 -- parse all block-level elements
 parseBlock :: Parser Block
 parseBlock = do
   _ <- optional parseEmptyLines
-  block <- parseHeading <|> parseFreeText
+  block <- parseFootnoteRef <|> parseHeading <|> parseImage <|> parseFreeText
   _ <- optional parseEmptyLines
   return block
 
@@ -164,6 +208,10 @@ convertBlock (Heading level inlines) =
    in "<" ++ tag ++ ">" ++ concatMap convertInline inlines ++ "</" ++ tag ++ ">\n"
 convertBlock (FreeText inlines) =
   "<p>" ++ concatMap convertInline inlines ++ "</p>\n"
+convertBlock (FootnoteRef num content) =
+  "<p id=\"fn" ++ show num ++ "\">" ++ content ++ "</p>\n"
+convertBlock (Image altText url title) =
+  "<img src=\"" ++ url ++ "\" alt=\"" ++ altText ++ "\" title=\"" ++ title ++ "\">\n"
 
 -- Convert ADT to full HTML page
 convertADTHTML :: ADT -> String
