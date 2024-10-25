@@ -193,6 +193,7 @@ parseBlockQuoteLine = do
 parseBlockQuote :: Parser Block
 parseBlockQuote = do
   blockQuote <- some parseBlockQuoteLine
+  _ <- optional parseEmptyLines
   return $ BlockQuote blockQuote
 
 
@@ -215,6 +216,7 @@ parseCode = do
   codeLines <- parseCodeLines         -- 解析代码内容直到结束标记
   _ <- string "```"                  -- 结束标记
   _ <- spaces
+  _ <- optional parseEmptyLines
   return $ CodeBlock (maybe "" id lang) codeLines
 
 
