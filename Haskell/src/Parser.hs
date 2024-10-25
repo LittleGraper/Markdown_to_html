@@ -207,6 +207,14 @@ parsePositiveInt = do
 space :: Parser Char
 space = satisfy isSpace
 
+
+
+-- | Return a parser that produces one or more empty lines.
+parseEmptyLines :: Parser ()
+parseEmptyLines = do
+  _ <- some (is '\n')
+  return ()
+
 -- | Return a parser that produces a lower-case character but fails if:
 --
 --   * the input is empty; or
@@ -350,15 +358,3 @@ commaTok = charTok ','
 stringTok :: String -> Parser String
 stringTok = tok . string
 
-
-
-
-
--- -- | A function that parses a positive integer
--- parsePositiveInt :: Parser Int
--- parsePositiveInt = do
---   digits <- some digit
---   let number = read digits :: Int
---   if number > 0
---     then return number 
---     else empty
