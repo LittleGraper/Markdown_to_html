@@ -8,6 +8,7 @@ import Control.Applicative (Alternative (..), optional)
 import Control.Monad (guard)
 import Instances (Parser (..))
 import Parser (inlineSpace, is, noneof, oneof, parseEmptyLines, parsePositiveInt, space, spaces, spaces1, string)
+import Data.Char (isSpace)
 
 -- Define Algebraic Data Types(ADTs)
 data ADT = ADT [Block]
@@ -34,20 +35,26 @@ data Block
   | CodeBlock String String -- language, content
   | OrderedList [ListItem]
   | UnorderedList [ListItem]
-  deriving (
-            Show, Eq)
+  | Table TableRow [TableRow]
+  deriving (Show, Eq)
 
 -- Define list items for ordered lists
--- including the indentation level and content
 data ListItem = ListItem
-  { isSublist :: Bool, -- indicate if the current list item is a sublist or not
+  { isSublist :: Bool, -- is sublist or not
     liContent :: [Inline] -- list item content
   }
   deriving (Show, Eq)
 
+-- Define table row
+data TableRow = TableRow [Inline]
+  deriving (Show, Eq)
+
+
 -- | --------------------------------------------------
 -- | --------------- Text Modifiers -------------------
 -- | --------------------------------------------------
+-- >>> parse parseItalic "_italic_"
+-- Result >< Italic [PlainText "italic"]
 parseItalic :: Parser Inline
 parseItalic = do
   _ <- is '_'
@@ -55,12 +62,17 @@ parseItalic = do
   _ <- is '_'
   return $ Italic [PlainText content]
 
+-- >>> parse parseBold "**bold**"
+-- Result >< Bold [PlainText "bold"]
 parseBold :: Parser Inline
 parseBold = do
   _ <- string "**"
   content <- some (noneof "*\n")
   _ <- string "**"
   return $ Bold [PlainText content]
+
+-- >>> parse parseStrikethrough "~~  strikethrough~~"
+-- Result >< Strikethrough [PlainText "  strikethrough"]
 
 parseStrikethrough :: Parser Inline
 parseStrikethrough = do
@@ -278,26 +290,7 @@ convertOrderedList items = "    <ol>\n" ++ processItems items (extractSublistRan
        in startTags ++ liHtml ++ endTags ++ processItems rest subRanges (index + 1)
 
 
--- Substract sublist ranges
--- For example: 
--- For a list with 8 ListItem(index from 0 - 7), this function will return the the range of the sublist index(list of tuples)
--- >>> extractSublistRanges [ListItem False [PlainText "item 1"], ListItem True [PlainText "subitem 1"], ListItem True [PlainText "subitem 2"], ListItem False [PlainText "item 2"]]
--- [(1,2)]
--- >>> 
-extractSublistRanges :: [ListItem] -> [(Int, Int)]
-extractSublistRanges items = go items 0 [] Nothing
-  where
-    -- 递归函数，带有当前索引、结果集和可选的开始索引
-    go :: [ListItem] -> Int -> [(Int, Int)] -> Maybe Int -> [(Int, Int)]
-    go [] _ ranges Nothing = ranges -- 没有更多的项且没有开放的子列表组
-    go [] _ ranges (Just start) = ranges ++ [(start, start)] -- 子列表组只有一个项
-    go (item : rest) index ranges currentStart
-      | isSublist item = case currentStart of
-          Nothing -> go rest (index + 1) ranges (Just index) -- 开始新的子列表组
-          Just start -> go rest (index + 1) ranges (Just start) -- 继续在当前子列表组
-      | otherwise = case currentStart of
-          Nothing -> go rest (index + 1) ranges Nothing -- 不是子列表项，继续
-          Just start -> go rest (index + 1) (ranges ++ [(start, index - 1)]) Nothing -- 关闭子列表组
+
 
 
 --------------------------------------------------
@@ -347,39 +340,193 @@ convertUnorderedList items = "    <ul>\n" ++ processItems items (extractSublistR
        in startTags ++ liHtml ++ endTags ++ processItems rest subRanges (index + 1)
 
 
+-- | -------------------------------------------------------- |
+-- | ---------------------- Table --------------------------- |
+-- | -------------------------------------------------------- |
+
+
+-- Rewrite all inline text modifiers to exclude the pipe character
+
+-- >>> parse parseItalicNoPipe " _italic_ "
+-- Result >< Italic [PlainText "italic"]
+parseItalicNoPipe :: Parser Inline
+parseItalicNoPipe = do
+  _ <- spaces
+  _ <- is '_'
+  content <- some (noneof "_\n|") -- 排除管道符
+  _ <- is '_'
+  _ <- spaces
+  return $ Italic [PlainText content]
+
+parseBoldNoPipe :: Parser Inline
+parseBoldNoPipe = do
+  _ <- spaces
+  _ <- string "**"
+  content <- some (noneof "*\n|")
+  _ <- string "**"
+  _ <- spaces
+  return $ Bold [PlainText content]
+
+parseStrikethroughNoPipe :: Parser Inline
+parseStrikethroughNoPipe = do
+  _ <- spaces
+  _ <- string "~~"
+  content <- some (noneof "~\n|")
+  _ <- string "~~"
+  _ <- spaces
+  return $ Strikethrough [PlainText content]
+
+parseLinkNoPipe :: Parser Inline
+parseLinkNoPipe = do
+  _ <- spaces
+  _ <- is '['
+  linkText <- some (noneof "]\n|")
+  _ <- is ']'
+  _ <- is '('
+  url <- some (noneof ")\n| ")
+  _ <- is ')'
+  _ <- spaces
+  return $ Link url [PlainText linkText]
+
+parseInlineCodeNoPipe :: Parser Inline
+parseInlineCodeNoPipe = do
+  _ <- spaces
+  _ <- is '`'
+  content <- some (noneof "`\n|")
+  _ <- is '`'
+  _ <- spaces
+  return $ InlineCode content
+
+parseFootnoteInlineNoPipe :: Parser Inline
+parseFootnoteInlineNoPipe = do
+  _ <- spaces
+  _ <- string "[^"
+  number <- parsePositiveInt
+  _ <- is ']'
+  _ <- spaces
+  return $ FootnoteInline number
+
+parsePlainTextNoPipe :: Parser Inline
+parsePlainTextNoPipe = do
+  _ <- spaces
+  text <- some (noneof "_*~`[^|\n")
+  _ <- spaces
+  return $ PlainText text
+
+-- >>>parse parseInlineNoPipe " hello | world "
+-- Result >| world < PlainText "hello"
+parseInlineNoPipe :: Parser Inline
+parseInlineNoPipe = do
+  parseItalicNoPipe 
+    <|> parseBoldNoPipe 
+    <|> parseStrikethroughNoPipe 
+    <|> parseLinkNoPipe 
+    <|> parseInlineCodeNoPipe 
+    <|> parseFootnoteInlineNoPipe 
+    <|> parsePlainTextNoPipe
+
+
+-- Parse table row
+-- >>> parse parseTableRow "  | _a_ | **b** | ~~c ~~   |"
+-- Result >< TableRow [Italic [PlainText "a"],Bold [PlainText "b"],Strikethrough [PlainText "c "]]
+parseTableRow :: Parser TableRow
+parseTableRow = do
+  _ <- spaces
+  _ <- is '|'
+  content <- sepBy1 parseInlineNoPipe (is '|') 
+  _ <- is '|'
+  return $ TableRow content
+
+-- Parse separator row
+-- >>> parse parseSeparatorRow "  |---|---|---|"
+-- Result >< TableRow [PlainText "---"]
+
+parseSeparatorRow :: Parser TableRow
+parseSeparatorRow = do
+  _ <- spaces
+  _ <- is '|'
+  _ <- sepBy1 parseSeparatorRowCell (is '|')
+  _ <- is '|'
+  return $ TableRow [PlainText ""]
+
+
+-- parse separator row in one cell
+-- >>> parse parseSeparatorRowCell " ---"
+-- Result >< PlainText "---"
+
+parseSeparatorRowCell :: Parser Inline
+parseSeparatorRowCell = do
+  _ <- spaces
+  _ <- string "---"      -- ensure that the cell contains at least 3 dashes
+  content <- many (oneof "-")
+  _ <- spaces
+  return $ PlainText (content ++ "---")
+
+
+-- Parse table
+-- >>> parse parseTable "  | a | b | c |\n  |---|---|---|\n  | _a_ | **b** | ~~c~~ |\n | a | b | c |"
+-- Result >< Table (TableRow [PlainText "a ",PlainText "b ",PlainText "c "]) [TableRow [Italic [PlainText "a"],Bold [PlainText "b"],Strikethrough [PlainText "c"]],TableRow [PlainText "a ",PlainText "b ",PlainText "c "]]
+parseTable :: Parser Block
+parseTable = do
+  tableHeader <- parseTableRow
+  _ <- parseSeparatorRow
+  rows <- some parseTableRow
+  _ <- optional parseEmptyLines
+  return $ Table tableHeader rows
 
 
 
+-- 转换表格为 HTML，包含 <thead> 和 <tbody> 标签
+convertTable :: TableRow -> [TableRow] -> String
+convertTable header rows =
+  "    <table>\n"
+    ++ "        <thead>\n"
+    ++ convertTableHeader header
+    ++ "        </thead>\n"
+    ++ "        <tbody>\n"
+    ++ concatMap convertTableRow rows
+    ++ "        </tbody>\n"
+    ++ "    </table>\n"
+
+-- 转换表格标题行
+convertTableHeader :: TableRow -> String
+convertTableHeader (TableRow cells) =
+  "            <tr>\n"
+    ++ concatMap convertTableHeaderCell cells
+    ++ "            </tr>\n"
+
+-- 转换表格标题单元格
+convertTableHeaderCell :: Inline -> String
+convertTableHeaderCell cell =
+  "                <th>" ++ trimEnd (convertInline cell) ++ "</th>\n"
 
 
+-- 转换表格内容行
+convertTableRow :: TableRow -> String
+convertTableRow (TableRow cells) =
+  "            <tr>\n"
+    ++ concatMap convertTableCell cells
+    ++ "            </tr>\n"
 
-
-
-
-
-
-
-
-
-
-
-
-
+-- 转换表格内容单元格
+convertTableCell :: Inline -> String
+convertTableCell cell =
+  "                <td>" ++ trimEnd (convertInline cell) ++ "</td>\n"
 -- | -----------------------------------------------------
 -- | -------------- Parsing and Conversion ---------------
 -- | -----------------------------------------------------
 parseBlock :: Parser Block
 parseBlock = do
   _ <- optional parseEmptyLines
-  block <-
-    parseFootnoteRef
-      <|> parseUnorderedList
-      <|> parseOrderedList
-      <|> parseHeading
-      <|> parseBlockQuote
-      <|> parseCode
-      <|> parseImage
-      <|> parseFreeText
+  block <- parseTable
+    <|>  parseFootnoteRef
+    <|>  parseUnorderedList
+    <|>  parseOrderedList
+    <|>  parseHeading
+    <|>  parseBlockQuote
+    <|>  parseCode
+    <|>  parseImage
+    <|>  parseFreeText
   _ <- optional parseEmptyLines
   return block
 
@@ -392,6 +539,8 @@ markdownParser = do
 
 -- Convert block-level elements to HTML
 convertBlock :: Block -> String
+-- convertBlock (Table tableHeader rows) = convertTable tableHeader rows
+convertBlock (Table header rows) = convertTable header rows
 convertBlock (OrderedList items) = convertOrderedList items
 convertBlock (UnorderedList items) = convertUnorderedList items
 convertBlock (Heading level inlines) =
@@ -427,3 +576,51 @@ convertADTHTML (ADT blocks) =
     ++ concatMap convertBlock blocks
     ++ "</body>\n\n"
     ++ "</html>\n"
+
+
+
+-- | -----------------------------------------------------
+-- | ------------------ Utility Functions ----------------
+-- | -----------------------------------------------------
+
+-- sepBy1 function
+-- p is the parser for the element
+-- sep is the parser for the separator
+-- This parser will parse one or more elements separated by the separator
+
+-- >>> parse (sepBy1 parseInlineNoPipe (is '|')) "_a_|~~a~~|a|"
+-- Result >|< [Italic [PlainText "a"],Strikethrough [PlainText "a"],PlainText "a"]
+sepBy1 :: Parser a -> Parser b -> Parser [a]
+sepBy1 p sep = do
+  x <- p
+  xs <- many (sep >> p)
+  return (x : xs)
+
+
+
+-- Substract sublist ranges
+-- For example: 
+-- For a list with 8 ListItem(index from 0 - 7), this function will return the the range of the sublist index(list of tuples)
+-- >>> extractSublistRanges [ListItem False [PlainText "item 1"], ListItem True [PlainText "subitem 1"], ListItem True [PlainText "subitem 2"], ListItem False [PlainText "item 2"]]
+-- [(1,2)]
+-- >>> 
+extractSublistRanges :: [ListItem] -> [(Int, Int)]
+extractSublistRanges items = go items 0 [] Nothing
+  where
+    -- 递归函数，带有当前索引、结果集和可选的开始索引
+    go :: [ListItem] -> Int -> [(Int, Int)] -> Maybe Int -> [(Int, Int)]
+    go [] _ ranges Nothing = ranges -- 没有更多的项且没有开放的子列表组
+    go [] _ ranges (Just start) = ranges ++ [(start, start)] -- 子列表组只有一个项
+    go (item : rest) index ranges currentStart
+      | isSublist item = case currentStart of
+          Nothing -> go rest (index + 1) ranges (Just index) -- 开始新的子列表组
+          Just start -> go rest (index + 1) ranges (Just start) -- 继续在当前子列表组
+      | otherwise = case currentStart of
+          Nothing -> go rest (index + 1) ranges Nothing -- 不是子列表项，继续
+          Just start -> go rest (index + 1) (ranges ++ [(start, index - 1)]) Nothing -- 关闭子列表组
+
+
+
+-- 去除字符串尾部的空格
+trimEnd :: String -> String
+trimEnd = reverse . dropWhile isSpace . reverse
