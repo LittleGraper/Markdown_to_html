@@ -3,15 +3,23 @@
 -- | Implementation of a parser-combinator.
 module Parser where
 
-import           Control.Applicative
-import           Data.Char           (isAlpha, isDigit, isLower, isSpace,
-                                      isUpper)
-import           Instances           (ParseError (..), ParseResult (..),
-                                      Parser (..), readInt)
+import Control.Applicative
+import Data.Char
+  ( isAlpha,
+    isDigit,
+    isLower,
+    isSpace,
+    isUpper,
+  )
+import Instances
+  ( ParseError (..),
+    ParseResult (..),
+    Parser (..),
+    readInt,
+  )
 
 -- $setup
 -- >>> import Instances (isErrorResult, parse)
-
 
 -- | -------------------------------------------------
 -- | --------------- Core parsers --------------------
@@ -40,7 +48,7 @@ unexpectedCharParser = Parser . const . Error . UnexpectedChar
 char :: Parser Char
 char = Parser f
   where
-    f ""       = Error UnexpectedEof
+    f "" = Error UnexpectedEof
     f (x : xs) = Result xs x
 
 -- | Parse numbers as int until non-digit
@@ -60,7 +68,7 @@ int = Parser f
     f "" = Error UnexpectedEof
     f x = case readInt x of
       Just (v, rest) -> Result rest v
-      Nothing        -> Error $ UnexpectedChar (head x)
+      Nothing -> Error $ UnexpectedChar (head x)
 
 -- | Write a parser that asserts that there is no remaining input.
 --
@@ -73,7 +81,7 @@ eof :: Parser ()
 eof = Parser f
   where
     f "" = Result "" ()
-    f x  = Error $ ExpectedEof x
+    f x = Error $ ExpectedEof x
 
 -- | -------------------------------------------------
 -- | --------------- Satisfy parsers -----------------
@@ -167,7 +175,6 @@ noneof = satisfy . flip notElem
 digit :: Parser Char
 digit = satisfy isDigit
 
-
 -- | A parser that parses one or more digits and returns them as a string.
 -- | This parser is based on the 'digit' parser, which parses a single digit.
 -- | 'some' is used to ensure that we parse at least one digit.
@@ -177,7 +184,6 @@ digit = satisfy isDigit
 -- True
 parseDigits :: Parser String
 parseDigits = some digit
-
 
 -- | A parser that parses a positive integer.
 -- | It then converts the string to an integer and ensures the number is positive.
@@ -190,12 +196,11 @@ parseDigits = some digit
 -- True
 parsePositiveInt :: Parser Int
 parsePositiveInt = do
-  digitsStr <- parseDigits        -- Parse the digits as a string
-  let number = read digitsStr :: Int  -- Convert the string to an integer
+  digitsStr <- parseDigits -- Parse the digits as a string
+  let number = read digitsStr :: Int -- Convert the string to an integer
   if number > 0
-    then return number            -- Return the number if it's positive
-    else empty                    -- Fail the parser if the number is not positive
-
+    then return number -- Return the number if it's positive
+    else empty -- Fail the parser if the number is not positive
 
 -- | Return a parser that produces a space character but fails if
 --
@@ -206,8 +211,6 @@ parsePositiveInt = do
 -- /Hint/: Use the 'isSpace' function
 space :: Parser Char
 space = satisfy isSpace
-
-
 
 -- | Return a parser that produces one or more empty lines.
 parseEmptyLines :: Parser ()
@@ -273,7 +276,6 @@ spaces = many space
 -- True
 spaces1 :: Parser String
 spaces1 = some space
-
 
 -- | Write a parser that will parse zero or more spaces (not including newlines)
 --
@@ -357,4 +359,3 @@ commaTok = charTok ','
 -- True
 stringTok :: String -> Parser String
 stringTok = tok . string
-

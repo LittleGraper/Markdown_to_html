@@ -1,17 +1,16 @@
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
 
 {-# HLINT ignore "Use fromMaybe" #-}
+{-# HLINT ignore "Use newtype instead of data" #-}
 module Assignment (markdownParser, convertADTHTML) where
 
 import Control.Applicative (Alternative (..), optional)
 import Control.Monad (guard)
-import Data.Time.Clock (getCurrentTime)
-import Data.Time.Format (defaultTimeLocale, formatTime)
 import Instances (Parser (..))
 import Parser (inlineSpace, is, noneof, oneof, parseEmptyLines, parsePositiveInt, space, spaces, spaces1, string)
 
 -- Define Algebraic Data Types(ADTs)
-data ADT = Document [Block]
+data ADT = ADT [Block]
   deriving (Show, Eq)
 
 -- Define inline Text Modifiers
@@ -33,6 +32,17 @@ data Block
   | Image String String String -- alt, url, title
   | BlockQuote [Block]
   | CodeBlock String String -- language, content
+  | OrderedList [ListItem]
+  | UnorderedList [ListItem]
+  deriving (
+            Show, Eq)
+
+-- Define list items for ordered lists
+-- including the indentation level and content
+data ListItem = ListItem
+  { isSublist :: Bool, -- indicate if the current list item is a sublist or not
+    liContent :: [Inline] -- list item content
+  }
   deriving (Show, Eq)
 
 -- | --------------------------------------------------
@@ -115,7 +125,9 @@ convertInline (FootnoteInline n) = "<sup><a id=\"fn" ++ show n ++ "ref\" href=\"
 -- FreeText
 parseFreeText :: Parser Block
 parseFreeText = do
+  -- Parse leading and trailing empty lines
   _ <- optional parseEmptyLines
+  -- Parse leading whitespaces
   _ <- spaces
   content <- some parseInline
   _ <- spaces
@@ -191,37 +203,178 @@ parseBlockQuote = do
 parseCode :: Parser Block
 parseCode = do
   _ <- spaces
-  _ <- string "```" -- 开始标记
-  lang <- many (noneof "\n") -- 可选的语言标识符
+  _ <- string "```"
+  lang <- many (noneof "\n")
   _ <- is '\n'
   CodeBlock lang <$> parseCodeContent
 
--- 解析代码内容，递归处理每行，直到遇到结束标记
+-- Parse the code line recursively until the closing tag
 parseCodeContent :: Parser String
 parseCodeContent = do
-  line <- many (noneof "\n") -- 解析一行直到行尾
-  _ <- is '\n' -- 消耗换行符
-  -- 尝试匹配结束标记，若成功则结束解析，否则继续解析下一行
+  line <- many (noneof "\n")
+  _ <- is '\n'
   rest <- (string "```" >> return "") <|> parseCodeContent
   return $ line ++ "\n" ++ rest
 
 -- Footnote reference parser
 parseFootnoteRef :: Parser Block
 parseFootnoteRef = do
-  _ <- spaces -- 忽略前导空白
-  _ <- string "[^" -- 脚注开头
-  num <- parsePositiveInt -- 脚注编号
-  _ <- string "]:" -- 脚注编号后的分隔符
-  _ <- spaces -- 忽略冒号后的空白
-  content <- some (noneof "\n") -- 解析内容直到换行
+  _ <- spaces
+  _ <- string "[^"
+  num <- parsePositiveInt
+  _ <- string "]:"
+  _ <- spaces
+  content <- some (noneof "\n")
   return $ FootnoteRef num content
 
--- parse all block-level elements
+--------------------------------------------------
+----------------- Ordered List -------------------
+--------------------------------------------------
+
+-- parse a list item of ordered list
+-- >>> parse parseOrderedListItem "1. item 1"
+-- Result >< ListItem {isSublist = False, liContent = [PlainText "item 1"]}
+-- >>> parse parseOrderedListItem "    1. item 2"
+-- Result >< ListItem {isSublist = True, liContent = [PlainText "item 2"]}
+parseOrderedListItem :: Parser ListItem
+parseOrderedListItem = do
+  leadingSpaces <- many (is ' ')
+  let indentation = length leadingSpaces
+  let isSub = indentation == 4 -- Check if the current list item is a sublist
+  guard (indentation == 0 || indentation == 4)
+
+  _ <- parsePositiveInt
+  _ <- is '.'
+  _ <- some (oneof " \t")
+  content <- many parseInline
+  _ <- optional (is '\n')
+
+  return $ ListItem isSub content
+
+-- Ordered List
+parseOrderedList :: Parser Block
+parseOrderedList = do
+  items <- some parseOrderedListItem
+  _ <- optional parseEmptyLines
+  return $ OrderedList items
+
+-- Convert ordered list into HTML 
+-- >>> convertOrderedList [ListItem False [PlainText "item 1"], ListItem True [PlainText "subitem 1"], ListItem False [PlainText "item 2"]]
+-- "    <ol>\n        <li>item 1</li>\n        <ol>\n            <li>subitem 1</li>\n        </ol>\n        <li>item 2</li>\n    </ol>\n"
+-- >>> convertOrderedList [ListItem False [PlainText "item 1"], ListItem True [PlainText "subitem 1"], ListItem True [PlainText "subitem 2"], ListItem False [PlainText "item 2"]]
+-- "    <ol>\n        <li>item 1</li>\n        <ol>\n            <li>subitem 1</li>\n            <li>subitem 2</li>\n        </ol>\n        <li>item 2</li>\n    </ol>\n"
+
+convertOrderedList :: [ListItem] -> String
+convertOrderedList items = "    <ol>\n" ++ processItems items (extractSublistRanges items) 0 ++ "    </ol>\n"
+  where
+    processItems :: [ListItem] -> [(Int, Int)] -> Int -> String
+    processItems [] _ _ = ""
+    processItems (item : rest) subRanges index =
+      let ListItem isSub content = item
+          indent = if isSub then "            " else "        " -- 12 spaces indentation for sublist, 8 spaces for non-sublist
+          liHtml = indent ++ "<li>" ++ concatMap convertInline content ++ "</li>\n"
+          startTags = if any (\(start, _) -> start == index) subRanges then "        <ol>\n" else ""
+          endTags = if any (\(_, end) -> end == index) subRanges then "        </ol>\n" else ""
+       in startTags ++ liHtml ++ endTags ++ processItems rest subRanges (index + 1)
+
+
+-- Substract sublist ranges
+-- For example: 
+-- For a list with 8 ListItem(index from 0 - 7), this function will return the the range of the sublist index(list of tuples)
+-- >>> extractSublistRanges [ListItem False [PlainText "item 1"], ListItem True [PlainText "subitem 1"], ListItem True [PlainText "subitem 2"], ListItem False [PlainText "item 2"]]
+-- [(1,2)]
+-- >>> 
+extractSublistRanges :: [ListItem] -> [(Int, Int)]
+extractSublistRanges items = go items 0 [] Nothing
+  where
+    -- 递归函数，带有当前索引、结果集和可选的开始索引
+    go :: [ListItem] -> Int -> [(Int, Int)] -> Maybe Int -> [(Int, Int)]
+    go [] _ ranges Nothing = ranges -- 没有更多的项且没有开放的子列表组
+    go [] _ ranges (Just start) = ranges ++ [(start, start)] -- 子列表组只有一个项
+    go (item : rest) index ranges currentStart
+      | isSublist item = case currentStart of
+          Nothing -> go rest (index + 1) ranges (Just index) -- 开始新的子列表组
+          Just start -> go rest (index + 1) ranges (Just start) -- 继续在当前子列表组
+      | otherwise = case currentStart of
+          Nothing -> go rest (index + 1) ranges Nothing -- 不是子列表项，继续
+          Just start -> go rest (index + 1) (ranges ++ [(start, index - 1)]) Nothing -- 关闭子列表组
+
+
+--------------------------------------------------
+----------------- Unordered List -----------------
+--------------------------------------------------
+
+-- paese a list item of unordered list
+-- >>> parse parseUnorderedListItem "- item 1"
+-- Result >< ListItem {isSublist = False, liContent = [PlainText "item 1"]}
+-- >>> parse parseUnorderedListItem "    - item 2"
+-- Result >< ListItem {isSublist = True, liContent = [PlainText "item 2"]}
+-- >>> parse parseUnorderedListItem "- item 3     "
+-- Result >< ListItem {isSublist = False, liContent = [PlainText "item 3     "]}
+parseUnorderedListItem :: Parser ListItem
+parseUnorderedListItem = do
+  leadingSpaces <- many (is ' ')
+  let indentation = length leadingSpaces
+  let isSub = indentation == 4
+  guard (indentation == 0 || indentation == 4)
+
+  _ <- oneof "-*+"
+  _ <- some (oneof " \t")
+  content <- many parseInline
+  _ <- optional (is '\n')
+
+  return $ ListItem isSub content
+
+-- parse unordered list
+parseUnorderedList :: Parser Block
+parseUnorderedList = do
+  items <- some parseUnorderedListItem
+  _ <- optional parseEmptyLines
+  return $ UnorderedList items
+
+-- Convert ordered list into HTML
+convertUnorderedList :: [ListItem] -> String
+convertUnorderedList items = "    <ul>\n" ++ processItems items (extractSublistRanges items) 0 ++ "    </ul>\n"
+  where
+    processItems :: [ListItem] -> [(Int, Int)] -> Int -> String
+    processItems [] _ _ = ""
+    processItems (item : rest) subRanges index =
+      let ListItem isSub content = item
+          indent = if isSub then "            " else "        " -- 12 spaces indentation for sublist, 8 spaces for non-sublist
+          liHtml = indent ++ "<li>" ++ concatMap convertInline content ++ "</li>\n"
+          startTags = if any (\(start, _) -> start == index) subRanges then "        <ul>\n" else ""
+          endTags = if any (\(_, end) -> end == index) subRanges then "        </ul>\n" else ""
+       in startTags ++ liHtml ++ endTags ++ processItems rest subRanges (index + 1)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+-- | -----------------------------------------------------
+-- | -------------- Parsing and Conversion ---------------
+-- | -----------------------------------------------------
 parseBlock :: Parser Block
 parseBlock = do
   _ <- optional parseEmptyLines
   block <-
     parseFootnoteRef
+      <|> parseUnorderedList
+      <|> parseOrderedList
       <|> parseHeading
       <|> parseBlockQuote
       <|> parseCode
@@ -235,10 +388,12 @@ markdownParser :: Parser ADT
 markdownParser = do
   _ <- optional parseEmptyLines
   blocks <- some parseBlock
-  return $ Document blocks
+  return $ ADT blocks
 
 -- Convert block-level elements to HTML
 convertBlock :: Block -> String
+convertBlock (OrderedList items) = convertOrderedList items
+convertBlock (UnorderedList items) = convertUnorderedList items
 convertBlock (Heading level inlines) =
   let tag = "h" ++ show level
    in "    <" ++ tag ++ ">" ++ concatMap convertInline inlines ++ "</" ++ tag ++ ">\n"
@@ -246,14 +401,15 @@ convertBlock (FreeText inlines) =
   "    <p>" ++ concatMap convertInline inlines ++ "</p>\n"
 convertBlock (FootnoteRef num content) =
   "    <p id=\"fn" ++ show num ++ "\">" ++ content ++ "</p>\n"
-convertBlock (Image altText url title) =
-  "    <img src=\"" ++ url ++ "\" alt=\"" ++ altText ++ "\" title=\"" ++ title ++ "\">\n"
+convertBlock (Image alt url title) =
+  "    <img src=\"" ++ url ++ "\" alt=\"" ++ alt ++ "\" title=\"" ++ title ++ "\">\n"
 convertBlock (BlockQuote blocks) =
   "    <blockquote>\n" ++ concatMap convertBlockQuoteLine blocks ++ "    </blockquote>\n"
 convertBlock (CodeBlock lang code) =
   let codeClass = if null lang then "" else " class=\"language-" ++ lang ++ "\""
    in "    <pre><code" ++ codeClass ++ ">" ++ code ++ "</code></pre>\n"
 
+-- Convert blockquote line to HTML
 convertBlockQuoteLine :: Block -> String
 convertBlockQuoteLine (FreeText inlines) =
   "        <p>" ++ concatMap convertInline inlines ++ "</p>\n"
@@ -261,7 +417,7 @@ convertBlockQuoteLine _ = ""
 
 -- Convert ADT to a full HTML page with standard HTML structure and indentation
 convertADTHTML :: ADT -> String
-convertADTHTML (Document blocks) =
+convertADTHTML (ADT blocks) =
   "<!DOCTYPE html>\n<html lang=\"en\">\n\n"
     ++ "<head>\n"
     ++ "    <meta charset=\"UTF-8\">\n"
@@ -271,7 +427,3 @@ convertADTHTML (Document blocks) =
     ++ concatMap convertBlock blocks
     ++ "</body>\n\n"
     ++ "</html>\n"
-
--- Get current time (unused in this example)
-getTime :: IO String
-getTime = formatTime defaultTimeLocale "%Y-%m-%dT%H:%M:%S" <$> getCurrentTime
