@@ -1,14 +1,14 @@
 {-# OPTIONS_GHC -Wno-unrecognised-pragmas #-}
-
-{-# HLINT ignore "Use fromMaybe" #-}
 {-# HLINT ignore "Use newtype instead of data" #-}
+
 module Assignment (markdownParser, convertADTHTML) where
 
 import Control.Applicative (Alternative (..), optional)
 import Control.Monad (guard)
+import Data.Char (isSpace)
 import Instances (Parser (..))
 import Parser (inlineSpace, is, noneof, oneof, parseEmptyLines, parsePositiveInt, space, spaces, spaces1, string)
-import Data.Char (isSpace)
+import Data.Maybe (fromMaybe)
 
 -- Define Algebraic Data Types(ADTs)
 data ADT = ADT [Block]
@@ -48,7 +48,6 @@ data ListItem = ListItem
 -- Define table row
 data TableRow = TableRow [Inline]
   deriving (Show, Eq)
-
 
 -- | --------------------------------------------------
 -- | --------------- Text Modifiers -------------------
@@ -185,7 +184,7 @@ parseImage = do
   _ <- spaces1
   title <- imageTitleParser
   _ <- is ')'
-  return $ Image alt url (maybe "" id title)
+  return $ Image alt url (fromMaybe "" title)
 
 -- parse the title of image
 imageTitleParser :: Parser (Maybe String)
@@ -221,12 +220,17 @@ parseCode = do
   CodeBlock lang <$> parseCodeContent
 
 -- Parse the code line recursively until the closing tag
+-- 解析代码块内容
 parseCodeContent :: Parser String
 parseCodeContent = do
   line <- many (noneof "\n")
-  _ <- is '\n'
-  rest <- (string "```" >> return "") <|> parseCodeContent
-  return $ line ++ "\n" ++ rest
+  next <- optional (is '\n')
+  end <- optional (string "```")
+  case end of
+    Just _  -> return line
+    Nothing -> do
+      rest <- parseCodeContent
+      return $ line ++ maybe "" (:[]) next ++ rest
 
 -- Footnote reference parser
 parseFootnoteRef :: Parser Block
@@ -270,7 +274,7 @@ parseOrderedList = do
   _ <- optional parseEmptyLines
   return $ OrderedList items
 
--- Convert ordered list into HTML 
+-- Convert ordered list into HTML
 -- >>> convertOrderedList [ListItem False [PlainText "item 1"], ListItem True [PlainText "subitem 1"], ListItem False [PlainText "item 2"]]
 -- "    <ol>\n        <li>item 1</li>\n        <ol>\n            <li>subitem 1</li>\n        </ol>\n        <li>item 2</li>\n    </ol>\n"
 -- >>> convertOrderedList [ListItem False [PlainText "item 1"], ListItem True [PlainText "subitem 1"], ListItem True [PlainText "subitem 2"], ListItem False [PlainText "item 2"]]
@@ -283,15 +287,11 @@ convertOrderedList items = "    <ol>\n" ++ processItems items (extractSublistRan
     processItems [] _ _ = ""
     processItems (item : rest) subRanges index =
       let ListItem isSub content = item
-          indent = if isSub then "            " else "        " -- 12 spaces indentation for sublist, 8 spaces for non-sublist
+          indent = if isSub then "                " else "        " -- 16 spaces indentation for sublist, 12 spaces for non-sublist
           liHtml = indent ++ "<li>" ++ concatMap convertInline content ++ "</li>\n"
-          startTags = if any (\(start, _) -> start == index) subRanges then "        <ol>\n" else ""
-          endTags = if any (\(_, end) -> end == index) subRanges then "        </ol>\n" else ""
+          startTags = if any (\(start, _) -> start == index) subRanges then "            <ol>\n" else ""
+          endTags = if any (\(_, end) -> end == index) subRanges then "            </ol>\n" else ""
        in startTags ++ liHtml ++ endTags ++ processItems rest subRanges (index + 1)
-
-
-
-
 
 --------------------------------------------------
 ----------------- Unordered List -----------------
@@ -339,11 +339,9 @@ convertUnorderedList items = "    <ul>\n" ++ processItems items (extractSublistR
           endTags = if any (\(_, end) -> end == index) subRanges then "        </ul>\n" else ""
        in startTags ++ liHtml ++ endTags ++ processItems rest subRanges (index + 1)
 
-
 -- | -------------------------------------------------------- |
 -- | ---------------------- Table --------------------------- |
 -- | -------------------------------------------------------- |
-
 
 -- Rewrite all inline text modifiers to exclude the pipe character
 
@@ -417,14 +415,13 @@ parsePlainTextNoPipe = do
 -- Result >| world < PlainText "hello"
 parseInlineNoPipe :: Parser Inline
 parseInlineNoPipe = do
-  parseItalicNoPipe 
-    <|> parseBoldNoPipe 
-    <|> parseStrikethroughNoPipe 
-    <|> parseLinkNoPipe 
-    <|> parseInlineCodeNoPipe 
-    <|> parseFootnoteInlineNoPipe 
+  parseItalicNoPipe
+    <|> parseBoldNoPipe
+    <|> parseStrikethroughNoPipe
+    <|> parseLinkNoPipe
+    <|> parseInlineCodeNoPipe
+    <|> parseFootnoteInlineNoPipe
     <|> parsePlainTextNoPipe
-
 
 -- Parse table row
 -- >>> parse parseTableRow "  | _a_ | **b** | ~~c ~~   |"
@@ -433,7 +430,7 @@ parseTableRow :: Parser TableRow
 parseTableRow = do
   _ <- spaces
   _ <- is '|'
-  content <- sepBy1 parseInlineNoPipe (is '|') 
+  content <- sepBy1 parseInlineNoPipe (is '|')
   _ <- is '|'
   return $ TableRow content
 
@@ -449,7 +446,6 @@ parseSeparatorRow = do
   _ <- is '|'
   return $ TableRow [PlainText ""]
 
-
 -- parse separator row in one cell
 -- >>> parse parseSeparatorRowCell " ---"
 -- Result >< PlainText "---"
@@ -457,11 +453,10 @@ parseSeparatorRow = do
 parseSeparatorRowCell :: Parser Inline
 parseSeparatorRowCell = do
   _ <- spaces
-  _ <- string "---"      -- ensure that the cell contains at least 3 dashes
+  _ <- string "---" -- ensure that the cell contains at least 3 dashes
   content <- many (oneof "-")
   _ <- spaces
   return $ PlainText (content ++ "---")
-
 
 -- Parse table
 -- >>> parse parseTable "  | a | b | c |\n  |---|---|---|\n  | _a_ | **b** | ~~c~~ |\n | a | b | c |"
@@ -473,8 +468,6 @@ parseTable = do
   rows <- some parseTableRow
   _ <- optional parseEmptyLines
   return $ Table tableHeader rows
-
-
 
 -- 转换表格为 HTML，包含 <thead> 和 <tbody> 标签
 convertTable :: TableRow -> [TableRow] -> String
@@ -500,7 +493,6 @@ convertTableHeaderCell :: Inline -> String
 convertTableHeaderCell cell =
   "                <th>" ++ trimEnd (convertInline cell) ++ "</th>\n"
 
-
 -- 转换表格内容行
 convertTableRow :: TableRow -> String
 convertTableRow (TableRow cells) =
@@ -512,21 +504,23 @@ convertTableRow (TableRow cells) =
 convertTableCell :: Inline -> String
 convertTableCell cell =
   "                <td>" ++ trimEnd (convertInline cell) ++ "</td>\n"
+
 -- | -----------------------------------------------------
 -- | -------------- Parsing and Conversion ---------------
 -- | -----------------------------------------------------
 parseBlock :: Parser Block
 parseBlock = do
   _ <- optional parseEmptyLines
-  block <- parseTable
-    <|>  parseFootnoteRef
-    <|>  parseUnorderedList
-    <|>  parseOrderedList
-    <|>  parseHeading
-    <|>  parseBlockQuote
-    <|>  parseCode
-    <|>  parseImage
-    <|>  parseFreeText
+  block <-
+    parseTable
+      <|> parseFootnoteRef
+      <|> parseUnorderedList
+      <|> parseOrderedList
+      <|> parseHeading
+      <|> parseBlockQuote
+      <|> parseCode
+      <|> parseImage
+      <|> parseFreeText
   _ <- optional parseEmptyLines
   return block
 
@@ -556,7 +550,8 @@ convertBlock (BlockQuote blocks) =
   "    <blockquote>\n" ++ concatMap convertBlockQuoteLine blocks ++ "    </blockquote>\n"
 convertBlock (CodeBlock lang code) =
   let codeClass = if null lang then "" else " class=\"language-" ++ lang ++ "\""
-   in "    <pre><code" ++ codeClass ++ ">" ++ code ++ "</code></pre>\n"
+      trimmedCode = trimEnd code -- 使用已定义的 trimEnd 去除末尾多余的空白字符
+   in "    <pre><code" ++ codeClass ++ ">" ++ trimmedCode ++ "</code></pre>\n"
 
 -- Convert blockquote line to HTML
 convertBlockQuoteLine :: Block -> String
@@ -577,8 +572,6 @@ convertADTHTML (ADT blocks) =
     ++ "</body>\n\n"
     ++ "</html>\n"
 
-
-
 -- | -----------------------------------------------------
 -- | ------------------ Utility Functions ----------------
 -- | -----------------------------------------------------
@@ -596,14 +589,12 @@ sepBy1 p sep = do
   xs <- many (sep >> p)
   return (x : xs)
 
-
-
 -- Substract sublist ranges
--- For example: 
+-- For example:
 -- For a list with 8 ListItem(index from 0 - 7), this function will return the the range of the sublist index(list of tuples)
 -- >>> extractSublistRanges [ListItem False [PlainText "item 1"], ListItem True [PlainText "subitem 1"], ListItem True [PlainText "subitem 2"], ListItem False [PlainText "item 2"]]
 -- [(1,2)]
--- >>> 
+-- >>>
 extractSublistRanges :: [ListItem] -> [(Int, Int)]
 extractSublistRanges items = go items 0 [] Nothing
   where
@@ -619,8 +610,6 @@ extractSublistRanges items = go items 0 [] Nothing
           Nothing -> go rest (index + 1) ranges Nothing -- 不是子列表项，继续
           Just start -> go rest (index + 1) (ranges ++ [(start, index - 1)]) Nothing -- 关闭子列表组
 
-
-
--- 去除字符串尾部的空格
+-- Remove trailing whitespaces from a string
 trimEnd :: String -> String
 trimEnd = reverse . dropWhile isSpace . reverse
