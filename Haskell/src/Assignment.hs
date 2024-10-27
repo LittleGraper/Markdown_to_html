@@ -10,6 +10,10 @@ import Instances (Parser (..))
 import Parser (inlineSpace, is, noneof, oneof, parseEmptyLines, parsePositiveInt, space, spaces, spaces1, string)
 import Data.Maybe (fromMaybe)
 
+
+-- | ----------------------------------------------------------------- |
+-- | ------------------- Algebraic Data Types(ADTs) ------------------ |
+-- | ----------------------------------------------------------------- |
 -- Define Algebraic Data Types(ADTs)
 data ADT = ADT [Block]
   deriving (Show, Eq)
@@ -35,7 +39,7 @@ data Block
   | CodeBlock String String -- language, content
   | OrderedList [ListItem]
   | UnorderedList [ListItem]
-  | Table TableRow [TableRow]
+  | Table TableRow [TableRow] -- table header, other rows
   deriving (Show, Eq)
 
 -- Define list items for ordered lists
@@ -49,9 +53,9 @@ data ListItem = ListItem
 data TableRow = TableRow [Inline]
   deriving (Show, Eq)
 
--- | --------------------------------------------------
--- | --------------- Text Modifiers -------------------
--- | --------------------------------------------------
+-- | ----------------------------------------------------------------- |
+-- | ---------------------- Text Modifiers --------------------------- |
+-- | ----------------------------------------------------------------- |
 -- >>> parse parseItalic "_italic_"
 -- Result >< Italic [PlainText "italic"]
 parseItalic :: Parser Inline
@@ -243,9 +247,9 @@ parseFootnoteRef = do
   content <- some (noneof "\n")
   return $ FootnoteRef num content
 
---------------------------------------------------
------------------ Ordered List -------------------
---------------------------------------------------
+-- | ----------------------------------------------------------------- |
+-- | ------------------------ ordered List --------------------------- |
+-- | ----------------------------------------------------------------- |
 
 -- parse a list item of ordered list
 -- >>> parse parseOrderedListItem "1. item 1"
@@ -274,6 +278,7 @@ parseOrderedList = do
   _ <- optional parseEmptyLines
   return $ OrderedList items
 
+
 -- Convert ordered list into HTML
 -- >>> convertOrderedList [ListItem False [PlainText "item 1"], ListItem True [PlainText "subitem 1"], ListItem False [PlainText "item 2"]]
 -- "    <ol>\n        <li>item 1</li>\n        <ol>\n            <li>subitem 1</li>\n        </ol>\n        <li>item 2</li>\n    </ol>\n"
@@ -293,9 +298,9 @@ convertOrderedList items = "    <ol>\n" ++ processItems items (extractSublistRan
           endTags = if any (\(_, end) -> end == index) subRanges then "            </ol>\n" else ""
        in startTags ++ liHtml ++ endTags ++ processItems rest subRanges (index + 1)
 
---------------------------------------------------
------------------ Unordered List -----------------
---------------------------------------------------
+-- | ----------------------------------------------------------------- |
+-- | ---------------------- Unordered List --------------------------- |
+-- | ----------------------------------------------------------------- |
 
 -- paese a list item of unordered list
 -- >>> parse parseUnorderedListItem "- item 1"
@@ -333,10 +338,10 @@ convertUnorderedList items = "    <ul>\n" ++ processItems items (extractSublistR
     processItems [] _ _ = ""
     processItems (item : rest) subRanges index =
       let ListItem isSub content = item
-          indent = if isSub then "            " else "        " -- 12 spaces indentation for sublist, 8 spaces for non-sublist
+          indent = if isSub then "                " else "        " -- 16 spaces for sublist, 8 spaces for non-sublist
           liHtml = indent ++ "<li>" ++ concatMap convertInline content ++ "</li>\n"
-          startTags = if any (\(start, _) -> start == index) subRanges then "        <ul>\n" else ""
-          endTags = if any (\(_, end) -> end == index) subRanges then "        </ul>\n" else ""
+          startTags = if any (\(start, _) -> start == index) subRanges then "            <ul>\n" else ""
+          endTags = if any (\(_, end) -> end == index) subRanges then "            </ul>\n" else ""
        in startTags ++ liHtml ++ endTags ++ processItems rest subRanges (index + 1)
 
 -- | -------------------------------------------------------- |
@@ -345,13 +350,13 @@ convertUnorderedList items = "    <ul>\n" ++ processItems items (extractSublistR
 
 -- Rewrite all inline text modifiers to exclude the pipe character
 
--- >>> parse parseItalicNoPipe " _italic_ "
--- Result >< Italic [PlainText "italic"]
+-- >>> parse parseItalicNoPipe " _italic_ | rest parts"
+-- Result >| rest parts< Italic [PlainText "italic"]
 parseItalicNoPipe :: Parser Inline
 parseItalicNoPipe = do
   _ <- spaces
   _ <- is '_'
-  content <- some (noneof "_\n|") -- 排除管道符
+  content <- some (noneof "_\n|") -- exclude pipe '|' character
   _ <- is '_'
   _ <- spaces
   return $ Italic [PlainText content]
@@ -469,7 +474,7 @@ parseTable = do
   _ <- optional parseEmptyLines
   return $ Table tableHeader rows
 
--- 转换表格为 HTML，包含 <thead> 和 <tbody> 标签
+-- convert table to HTML
 convertTable :: TableRow -> [TableRow] -> String
 convertTable header rows =
   "    <table>\n"
@@ -481,26 +486,26 @@ convertTable header rows =
     ++ "        </tbody>\n"
     ++ "    </table>\n"
 
--- 转换表格标题行
+-- convert table header to HTML
 convertTableHeader :: TableRow -> String
 convertTableHeader (TableRow cells) =
   "            <tr>\n"
     ++ concatMap convertTableHeaderCell cells
     ++ "            </tr>\n"
 
--- 转换表格标题单元格
+-- convert table header cell to HTML
 convertTableHeaderCell :: Inline -> String
 convertTableHeaderCell cell =
   "                <th>" ++ trimEnd (convertInline cell) ++ "</th>\n"
 
--- 转换表格内容行
+-- convert table row to HTML
 convertTableRow :: TableRow -> String
 convertTableRow (TableRow cells) =
   "            <tr>\n"
     ++ concatMap convertTableCell cells
     ++ "            </tr>\n"
 
--- 转换表格内容单元格
+-- convert table cell to HTML
 convertTableCell :: Inline -> String
 convertTableCell cell =
   "                <td>" ++ trimEnd (convertInline cell) ++ "</td>\n"
@@ -533,24 +538,47 @@ markdownParser = do
 
 -- Convert block-level elements to HTML
 convertBlock :: Block -> String
--- convertBlock (Table tableHeader rows) = convertTable tableHeader rows
 convertBlock (Table header rows) = convertTable header rows
 convertBlock (OrderedList items) = convertOrderedList items
 convertBlock (UnorderedList items) = convertUnorderedList items
-convertBlock (Heading level inlines) =
+convertBlock (Heading level inlines) = convertHeading level inlines
+convertBlock (FreeText inlines) = convertFreeText inlines
+convertBlock (FootnoteRef num content) = convertFootnoteRef num content
+convertBlock (Image alt url title) = convertImage alt url title
+convertBlock (BlockQuote blocks) = convertBlockQuote blocks
+convertBlock (CodeBlock lang code) = convertCodeBlock lang code
+
+-- Convert Heading to HTML
+convertHeading :: Int -> [Inline] -> String
+convertHeading level inlines =
   let tag = "h" ++ show level
    in "    <" ++ tag ++ ">" ++ concatMap convertInline inlines ++ "</" ++ tag ++ ">\n"
-convertBlock (FreeText inlines) =
+
+-- Convert FreeText to HTML
+convertFreeText :: [Inline] -> String
+convertFreeText inlines =
   "    <p>" ++ concatMap convertInline inlines ++ "</p>\n"
-convertBlock (FootnoteRef num content) =
+
+-- Convert FootnoteRef to HTML
+convertFootnoteRef :: Int -> String -> String
+convertFootnoteRef num content =
   "    <p id=\"fn" ++ show num ++ "\">" ++ content ++ "</p>\n"
-convertBlock (Image alt url title) =
+
+-- Convert Image to HTML
+convertImage :: String -> String -> String -> String
+convertImage alt url title =
   "    <img src=\"" ++ url ++ "\" alt=\"" ++ alt ++ "\" title=\"" ++ title ++ "\">\n"
-convertBlock (BlockQuote blocks) =
+
+-- Convert BlockQuote to HTML
+convertBlockQuote :: [Block] -> String
+convertBlockQuote blocks =
   "    <blockquote>\n" ++ concatMap convertBlockQuoteLine blocks ++ "    </blockquote>\n"
-convertBlock (CodeBlock lang code) =
+
+-- Convert CodeBlock to HTML
+convertCodeBlock :: String -> String -> String
+convertCodeBlock lang code =
   let codeClass = if null lang then "" else " class=\"language-" ++ lang ++ "\""
-      trimmedCode = trimEnd code -- 使用已定义的 trimEnd 去除末尾多余的空白字符
+      trimmedCode = trimEnd code
    in "    <pre><code" ++ codeClass ++ ">" ++ trimmedCode ++ "</code></pre>\n"
 
 -- Convert blockquote line to HTML
@@ -558,6 +586,7 @@ convertBlockQuoteLine :: Block -> String
 convertBlockQuoteLine (FreeText inlines) =
   "        <p>" ++ concatMap convertInline inlines ++ "</p>\n"
 convertBlockQuoteLine _ = ""
+
 
 -- Convert ADT to a full HTML page with standard HTML structure and indentation
 convertADTHTML :: ADT -> String
@@ -598,18 +627,21 @@ sepBy1 p sep = do
 extractSublistRanges :: [ListItem] -> [(Int, Int)]
 extractSublistRanges items = go items 0 [] Nothing
   where
-    -- 递归函数，带有当前索引、结果集和可选的开始索引
+    -- Recursive function with current index, result set, and optional start index
     go :: [ListItem] -> Int -> [(Int, Int)] -> Maybe Int -> [(Int, Int)]
-    go [] _ ranges Nothing = ranges -- 没有更多的项且没有开放的子列表组
-    go [] _ ranges (Just start) = ranges ++ [(start, start)] -- 子列表组只有一个项
+    go [] _ ranges Nothing = ranges -- No more items and open sublist group
+    go [] _ ranges (Just start) = ranges ++ [(start, start)] -- only one item in the sublist group
     go (item : rest) index ranges currentStart
       | isSublist item = case currentStart of
-          Nothing -> go rest (index + 1) ranges (Just index) -- 开始新的子列表组
-          Just start -> go rest (index + 1) ranges (Just start) -- 继续在当前子列表组
+          Nothing -> go rest (index + 1) ranges (Just index) -- start new sublist group
+          Just start -> go rest (index + 1) ranges (Just start)
       | otherwise = case currentStart of
-          Nothing -> go rest (index + 1) ranges Nothing -- 不是子列表项，继续
-          Just start -> go rest (index + 1) (ranges ++ [(start, index - 1)]) Nothing -- 关闭子列表组
+          Nothing -> go rest (index + 1) ranges Nothing
+          Just start -> go rest (index + 1) (ranges ++ [(start, index - 1)]) Nothing -- close the sublist group
+
 
 -- Remove trailing whitespaces from a string
+-- >>> trimEnd "hello   "
+-- "hello"
 trimEnd :: String -> String
 trimEnd = reverse . dropWhile isSpace . reverse
