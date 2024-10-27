@@ -299,7 +299,7 @@ convertOrderedList items = "    <ol>\n" ++ processItems items (extractSublistRan
        in startTags ++ liHtml ++ endTags ++ processItems rest subRanges (index + 1)
 
 -- | ----------------------------------------------------------------- |
--- | ---------------------- Unordered List --------------------------- |
+-- | ----------------- Unordered List(Extension) --------------------- |
 -- | ----------------------------------------------------------------- |
 
 -- paese a list item of unordered list
